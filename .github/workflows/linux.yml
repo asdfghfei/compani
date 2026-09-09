@@ -1,4 +1,4 @@
-name: 🖥️ Ubuntu 24.04 Web Terminal
+name: 🖥️ CYNET Cloud Ubuntu Linux
 
 on:
   workflow_dispatch:
@@ -9,175 +9,108 @@ jobs:
     timeout-minutes: 360
 
     steps:
-
-      - name: 🐧 Create Ubuntu 24.04
+      - name: 📦 Setup Ubuntu Linux Engine & Web Terminal (TTYD)
         run: |
-          set -e
+          echo "=========================================================="
+          echo "  🖥️ INSTALLING UBUNTU LINUX & SERVER SUITE..."
+          echo "=========================================================="
 
-          echo "=============================================="
-          echo "       Creating Ubuntu 24.04 Container"
-          echo "=============================================="
+          sudo apt-get update -y -q
 
+          # نصب cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+
+          # نصب ttyd
+          sudo wget -q https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -O /usr/local/bin/ttyd
+          sudo chmod +x /usr/local/bin/ttyd
+
+          # اجرای Ubuntu 24.04
           docker run -d \
             --name cynet-ubuntu \
             --network host \
             ubuntu:24.04 \
             tail -f /dev/null
 
-      - name: 📦 Install Ubuntu Tools
+          # نصب پیش‌نیازها و ابزارهای رایج Ubuntu Server
+          docker exec cynet-ubuntu apt-get update -y
+
+          docker exec cynet-ubuntu apt-get install -y -q \
+            sudo \
+            curl \
+            wget \
+            git \
+            nano \
+            vim \
+            unzip \
+            zip \
+            tar \
+            gzip \
+            ca-certificates \
+            gnupg \
+            lsb-release \
+            software-properties-common \
+            apt-transport-https \
+            net-tools \
+            iproute2 \
+            iputils-ping \
+            dnsutils \
+            openssh-client \
+            python3 \
+            python3-pip \
+            python3-venv \
+            build-essential \
+            gcc \
+            g++ \
+            make \
+            tmux \
+            screen \
+            htop \
+            jq \
+            rsync \
+            socat \
+            zsh
+
+      - name: 🌐 Launch Interactive Web Terminal & Public Link
         run: |
-          set -e
+          echo "=========================================================="
+          echo "  🎉 LAUNCHING INTERACTIVE UBUNTU WEB TERMINAL..."
+          echo "=========================================================="
 
-          docker exec cynet-ubuntu bash -c '
-            export DEBIAN_FRONTEND=noninteractive
-
-            apt-get update -y
-
-            apt-get install -y \
-              sudo \
-              curl \
-              wget \
-              git \
-              nano \
-              vim \
-              unzip \
-              zip \
-              tar \
-              gzip \
-              ca-certificates \
-              gnupg \
-              lsb-release \
-              software-properties-common \
-              apt-transport-https \
-              net-tools \
-              iproute2 \
-              iputils-ping \
-              dnsutils \
-              python3 \
-              python3-pip \
-              python3-venv \
-              build-essential \
-              gcc \
-              g++ \
-              make \
-              tmux \
-              screen \
-              htop \
-              jq \
-              rsync \
-              socat \
-              zsh
-          '
-
-      - name: 🌐 Install TTYD
-        run: |
-          set -e
-
-          sudo wget -q \
-            https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
-            -O /usr/local/bin/ttyd
-
-          sudo chmod +x /usr/local/bin/ttyd
-
-          ttyd --version
-
-      - name: ☁️ Install Cloudflared
-        run: |
-          set -e
-
-          sudo wget -q \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -O /usr/local/bin/cloudflared
-
-          sudo chmod +x /usr/local/bin/cloudflared
-
-          cloudflared --version
-
-      - name: 🚀 Launch Web Terminal
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "       Starting Ubuntu Web Terminal"
-          echo "=============================================="
-
+          # اجرای وب ترمینال با تم مشکی
           ttyd \
             -W \
             -p 7681 \
             -t fontSize=16 \
-            -t 'theme={"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
+            -t theme='{"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
             docker exec -it cynet-ubuntu /bin/bash \
-            > /tmp/ttyd.log 2>&1 &
+            > /dev/null 2>&1 &
 
-          TTYD_PID=$!
+          sleep 3
+
+          # ایجاد Cloudflare Tunnel
+          cloudflared tunnel --url http://localhost:7681 > tunnel.log 2>&1 &
 
           sleep 5
 
-          if ! kill -0 "$TTYD_PID" 2>/dev/null; then
-            echo "ERROR: TTYD failed to start."
-            cat /tmp/ttyd.log
-            exit 1
-          fi
+          for i in {1..20}; do
 
-          echo "TTYD started successfully."
-
-          echo "=============================================="
-          echo "       Starting Cloudflare Tunnel"
-          echo "=============================================="
-
-          rm -f tunnel.log
-
-          cloudflared tunnel \
-            --url http://127.0.0.1:7681 \
-            > tunnel.log 2>&1 &
-
-          CLOUDFLARED_PID=$!
-
-          URL=""
-
-          for i in $(seq 1 30); do
-            sleep 2
-
-            URL=$(grep -oE \
-              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              tunnel.log | head -n 1 || true)
+            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
 
             if [ -n "$URL" ]; then
+              echo ""
+              echo "=========================================================="
+              echo "  🔥 YOUR UBUNTU LINUX IS LIVE & READY!"
+              echo "  👉 CLICK TO OPEN IN BROWSER: $URL"
+              echo "  --------------------------------------------------------"
+              echo "  🖥️ Ubuntu 24.04 | Black Terminal | Keyboard Active"
+              echo "=========================================================="
+              echo ""
               break
             fi
 
-            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
-              echo "ERROR: Cloudflare Tunnel stopped."
-              cat tunnel.log
-              exit 1
-            fi
+            sleep 2
           done
 
-          if [ -z "$URL" ]; then
-            echo "ERROR: Could not get Cloudflare URL."
-            cat tunnel.log
-            exit 1
-          fi
+          tail -f tunnel.log
 
-          echo ""
-          echo "=========================================================="
-          echo "           🔥 UBUNTU 24.04 IS READY"
-          echo "=========================================================="
-          echo ""
-          echo "🌐 WEB TERMINAL:"
-          echo "$URL"
-          echo ""
-          echo "🖥️ Ubuntu: 24.04"
-          echo "💻 Terminal: TTYD"
-          echo "🔐 SSH: Disabled / Not Installed"
-          echo ""
-          echo "=========================================================="
-          echo ""
-
-          # Keep everything alive
-          while kill -0 "$CLOUDFLARED_PID" 2>/dev/null; do
-            sleep 20
-          done
-
-          echo "Cloudflare tunnel stopped."
-          cat tunnel.log
