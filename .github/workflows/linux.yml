@@ -1,0 +1,86 @@
+name: 🖥️ Ubuntu 24.04 + SSH (Pinggy)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  launch-ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 🐧 Setup Ubuntu 24.04 + SSH
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "   Installing Ubuntu 24.04 + SSH Server"
+          echo "=============================================="
+
+          docker run -d \
+            --name cynet-ubuntu \
+            --network host \
+            ubuntu:24.04 \
+            tail -f /dev/null
+
+          docker exec cynet-ubuntu bash -c '
+            apt-get update -y
+            apt-get install -y openssh-server sudo curl wget nano vim git
+            mkdir -p /run/sshd
+
+            userdel -r ubuntu 2>/dev/null || true
+
+            echo "root:${SSH_PASSWORD}" | chpasswd
+
+            sed -i "s/^#\\?PermitRootLogin.*/PermitRootLogin yes/" \
+              /etc/ssh/sshd_config
+
+            sed -i "s/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/" \
+              /etc/ssh/sshd_config
+
+            /usr/sbin/sshd
+          ' \
+          SSH_PASSWORD="${{ secrets.SSH_PASSWORD }}"
+
+      - name: 🌐 Install Pinggy
+        run: |
+          set -e
+
+          sudo apt-get update -y
+          sudo apt-get install -y openssh-client
+
+      - name: 🚀 Start SSH Tunnel
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "       Starting Pinggy SSH Tunnel"
+          echo "=============================================="
+
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -p 443 \
+              -R0:localhost:22 \
+              tcp@a.pinggy.io \
+              > pinggy.log 2>&1 &
+
+          sleep 8
+
+          cat pinggy.log
+
+          echo ""
+          echo "=============================================="
+          echo "          SSH CONNECTION INFORMATION"
+          echo "=============================================="
+
+          grep -Eo 'tcp://[^ ]+|ssh://[^ ]+|[0-9]+\.pinggy\.io:[0-9]+' \
+            pinggy.log || true
+
+          echo ""
+          echo "Username: root"
+          echo "Password: stored in GitHub Secret SSH_PASSWORD"
+          echo "=============================================="
+
+          tail -f pinggy.log
