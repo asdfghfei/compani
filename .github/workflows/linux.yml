@@ -1,4 +1,4 @@
-name: 🖥️ Ubuntu 24.04 + SSH (Pinggy)
+name: 🖥️ Ubuntu 24.04 SSH via Pinggy
 
 on:
   workflow_dispatch:
@@ -9,12 +9,16 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 🐧 Setup Ubuntu 24.04 + SSH
+
+      # ==========================================================
+      # Ubuntu 24.04
+      # ==========================================================
+      - name: 🐧 Create Ubuntu 24.04
         run: |
           set -e
 
           echo "=============================================="
-          echo "   Installing Ubuntu 24.04 + SSH Server"
+          echo "        Creating Ubuntu 24.04"
           echo "=============================================="
 
           docker run -d \
@@ -23,64 +27,233 @@ jobs:
             ubuntu:24.04 \
             tail -f /dev/null
 
-          docker exec cynet-ubuntu bash -c '
-            apt-get update -y
-            apt-get install -y openssh-server sudo curl wget nano vim git
-            mkdir -p /run/sshd
+          echo "Ubuntu container created."
 
-            userdel -r ubuntu 2>/dev/null || true
-
-            echo "root:${SSH_PASSWORD}" | chpasswd
-
-            sed -i "s/^#\\?PermitRootLogin.*/PermitRootLogin yes/" \
-              /etc/ssh/sshd_config
-
-            sed -i "s/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/" \
-              /etc/ssh/sshd_config
-
-            /usr/sbin/sshd
-          ' \
-          SSH_PASSWORD="${{ secrets.SSH_PASSWORD }}"
-
-      - name: 🌐 Install Pinggy
-        run: |
-          set -e
-
-          sudo apt-get update -y
-          sudo apt-get install -y openssh-client
-
-      - name: 🚀 Start SSH Tunnel
+      # ==========================================================
+      # Install SSH
+      # ==========================================================
+      - name: 🔐 Install and Configure SSH
         env:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -e
 
+          if [ -z "$SSH_PASSWORD" ]; then
+            echo "ERROR: SSH_PASSWORD secret is not configured."
+            exit 1
+          fi
+
+          docker exec \
+            -e SSH_PASSWORD="$SSH_PASSWORD" \
+            cynet-ubuntu \
+            bash -c '
+              set -e
+
+              echo "Installing SSH server..."
+
+              export DEBIAN_FRONTEND=noninteractive
+
+              apt-get update -y
+
+              apt-get install -y \
+                openssh-server \
+                sudo \
+                curl \
+                wget \
+                git \
+                nano \
+                vim \
+                unzip \
+                zip \
+                tar \
+                gzip \
+                ca-certificates \
+                net-tools \
+                iproute2 \
+                iputils-ping \
+                dnsutils \
+                python3 \
+                python3-pip \
+                python3-venv \
+                build-essential \
+                gcc \
+                g++ \
+                make \
+                tmux \
+                htop \
+                jq \
+                rsync \
+                socat \
+                zsh
+
+              echo "Configuring root password..."
+
+              echo "root:${SSH_PASSWORD}" | chpasswd
+
+              mkdir -p /run/sshd
+
+              # SSH configuration
+              sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin yes/" \
+                /etc/ssh/sshd_config
+
+              sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication yes/" \
+                /etc/ssh/sshd_config
+
+              sed -i "s/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/" \
+                /etc/ssh/sshd_config
+
+              # Make sure settings exist
+              grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config || \
+                echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+
+              grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config || \
+                echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+
+              # Generate SSH host keys
+              ssh-keygen -A
+
+              # Test configuration
+              /usr/sbin/sshd -t
+
+              # Start SSH
+              /usr/sbin/sshd
+
+              echo ""
+              echo "=============================================="
+              echo "           SSH STATUS"
+              echo "=============================================="
+
+              pgrep -a sshd || true
+
+              echo ""
+              echo "Listening ports:"
+              ss -lntp | grep ":22" || true
+
+              echo ""
+              echo "SSH configuration OK."
+            '
+
+      # ==========================================================
+      # Verify SSH from GitHub Runner
+      # ==========================================================
+      - name: 🧪 Test SSH Server
+        run: |
+          set -e
+
           echo "=============================================="
-          echo "       Starting Pinggy SSH Tunnel"
+          echo "          Testing SSH on localhost"
           echo "=============================================="
 
-          ssh -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=30 \
-              -p 443 \
-              -R0:localhost:22 \
-              tcp@a.pinggy.io \
-              > pinggy.log 2>&1 &
+          if ! nc -z 127.0.0.1 22; then
+            echo "ERROR: SSH is NOT listening on port 22."
+            docker exec cynet-ubuntu ps aux
+            exit 1
+          fi
 
-          sleep 8
+          echo "SSH port 22 is OPEN."
 
+      # ==========================================================
+      # Install Pinggy client dependency
+      # ==========================================================
+      - name: 🌐 Prepare Pinggy
+        run: |
+          set -e
+
+          sudo apt-get update -y
+          sudo apt-get install -y openssh-client netcat-openbsd
+
+      # ==========================================================
+      # Start Pinggy
+      # ==========================================================
+      - name: 🚀 Start Pinggy SSH Tunnel
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "          Starting Pinggy Tunnel"
+          echo "=============================================="
+
+          rm -f pinggy.log
+
+          ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            -p 443 \
+            -R0:localhost:22 \
+            tcp@a.pinggy.io \
+            > pinggy.log 2>&1 &
+
+          PINGGY_PID=$!
+
+          echo "Pinggy PID: $PINGGY_PID"
+
+          # Wait for Pinggy URL
+          URL=""
+
+          for i in $(seq 1 30); do
+            sleep 2
+
+            echo "Checking Pinggy... ($i/30)"
+
+            cat pinggy.log || true
+
+            URL=$(grep -oE \
+              'tcp://[^[:space:]]+\.run\.pinggy-free\.link:[0-9]+' \
+              pinggy.log | head -n 1 || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+            if ! kill -0 "$PINGGY_PID" 2>/dev/null; then
+              echo "ERROR: Pinggy process stopped."
+              cat pinggy.log
+              exit 1
+            fi
+          done
+
+          if [ -z "$URL" ]; then
+            echo "ERROR: Pinggy tunnel URL was not found."
+            echo ""
+            cat pinggy.log
+            exit 1
+          fi
+
+          HOST=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+)#\1#')
+          PORT=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+)#\2#')
+
+          echo ""
+          echo "=========================================================="
+          echo "              🔥 UBUNTU SSH IS READY"
+          echo "=========================================================="
+          echo ""
+          echo "Host:"
+          echo "$HOST"
+          echo ""
+          echo "Port:"
+          echo "$PORT"
+          echo ""
+          echo "Username:"
+          echo "root"
+          echo ""
+          echo "SSH command:"
+          echo "ssh -p $PORT root@$HOST"
+          echo ""
+          echo "Password:"
+          echo "Use your GitHub Actions SSH_PASSWORD secret"
+          echo ""
+          echo "=========================================================="
+          echo "Pinggy tunnel will remain active while this job runs."
+          echo "=========================================================="
+          echo ""
+
+          # Keep tunnel alive
+          while kill -0 "$PINGGY_PID" 2>/dev/null; do
+            sleep 20
+          done
+
+          echo "Pinggy tunnel stopped."
           cat pinggy.log
-
-          echo ""
-          echo "=============================================="
-          echo "          SSH CONNECTION INFORMATION"
-          echo "=============================================="
-
-          grep -Eo 'tcp://[^ ]+|ssh://[^ ]+|[0-9]+\.pinggy\.io:[0-9]+' \
-            pinggy.log || true
-
-          echo ""
-          echo "Username: root"
-          echo "Password: stored in GitHub Secret SSH_PASSWORD"
-          echo "=============================================="
-
-          tail -f pinggy.log
