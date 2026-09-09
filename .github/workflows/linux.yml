@@ -1,4 +1,4 @@
-name: 🖥️ Ubuntu 24.04 SSH via Pinggy
+name: 🖥️ Ubuntu 24.04 Web Terminal
 
 on:
   workflow_dispatch:
@@ -10,15 +10,12 @@ jobs:
 
     steps:
 
-      # ==========================================================
-      # Ubuntu 24.04
-      # ==========================================================
       - name: 🐧 Create Ubuntu 24.04
         run: |
           set -e
 
           echo "=============================================="
-          echo "        Creating Ubuntu 24.04"
+          echo "       Creating Ubuntu 24.04 Container"
           echo "=============================================="
 
           docker run -d \
@@ -27,233 +24,160 @@ jobs:
             ubuntu:24.04 \
             tail -f /dev/null
 
-          echo "Ubuntu container created."
-
-      # ==========================================================
-      # Install SSH
-      # ==========================================================
-      - name: 🔐 Install and Configure SSH
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+      - name: 📦 Install Ubuntu Tools
         run: |
           set -e
 
-          if [ -z "$SSH_PASSWORD" ]; then
-            echo "ERROR: SSH_PASSWORD secret is not configured."
+          docker exec cynet-ubuntu bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update -y
+
+            apt-get install -y \
+              sudo \
+              curl \
+              wget \
+              git \
+              nano \
+              vim \
+              unzip \
+              zip \
+              tar \
+              gzip \
+              ca-certificates \
+              gnupg \
+              lsb-release \
+              software-properties-common \
+              apt-transport-https \
+              net-tools \
+              iproute2 \
+              iputils-ping \
+              dnsutils \
+              python3 \
+              python3-pip \
+              python3-venv \
+              build-essential \
+              gcc \
+              g++ \
+              make \
+              tmux \
+              screen \
+              htop \
+              jq \
+              rsync \
+              socat \
+              zsh
+          '
+
+      - name: 🌐 Install TTYD
+        run: |
+          set -e
+
+          sudo wget -q \
+            https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
+            -O /usr/local/bin/ttyd
+
+          sudo chmod +x /usr/local/bin/ttyd
+
+          ttyd --version
+
+      - name: ☁️ Install Cloudflared
+        run: |
+          set -e
+
+          sudo wget -q \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -O /usr/local/bin/cloudflared
+
+          sudo chmod +x /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+      - name: 🚀 Launch Web Terminal
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "       Starting Ubuntu Web Terminal"
+          echo "=============================================="
+
+          ttyd \
+            -W \
+            -p 7681 \
+            -t fontSize=16 \
+            -t 'theme={"background":"#000000","foreground":"#ffffff","cursor":"#ffffff","selection":"#333333"}' \
+            docker exec -it cynet-ubuntu /bin/bash \
+            > /tmp/ttyd.log 2>&1 &
+
+          TTYD_PID=$!
+
+          sleep 5
+
+          if ! kill -0 "$TTYD_PID" 2>/dev/null; then
+            echo "ERROR: TTYD failed to start."
+            cat /tmp/ttyd.log
             exit 1
           fi
 
-          docker exec \
-            -e SSH_PASSWORD="$SSH_PASSWORD" \
-            cynet-ubuntu \
-            bash -c '
-              set -e
-
-              echo "Installing SSH server..."
-
-              export DEBIAN_FRONTEND=noninteractive
-
-              apt-get update -y
-
-              apt-get install -y \
-                openssh-server \
-                sudo \
-                curl \
-                wget \
-                git \
-                nano \
-                vim \
-                unzip \
-                zip \
-                tar \
-                gzip \
-                ca-certificates \
-                net-tools \
-                iproute2 \
-                iputils-ping \
-                dnsutils \
-                python3 \
-                python3-pip \
-                python3-venv \
-                build-essential \
-                gcc \
-                g++ \
-                make \
-                tmux \
-                htop \
-                jq \
-                rsync \
-                socat \
-                zsh
-
-              echo "Configuring root password..."
-
-              echo "root:${SSH_PASSWORD}" | chpasswd
-
-              mkdir -p /run/sshd
-
-              # SSH configuration
-              sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin yes/" \
-                /etc/ssh/sshd_config
-
-              sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication yes/" \
-                /etc/ssh/sshd_config
-
-              sed -i "s/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/" \
-                /etc/ssh/sshd_config
-
-              # Make sure settings exist
-              grep -q "^PermitRootLogin yes" /etc/ssh/sshd_config || \
-                echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
-
-              grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config || \
-                echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
-
-              # Generate SSH host keys
-              ssh-keygen -A
-
-              # Test configuration
-              /usr/sbin/sshd -t
-
-              # Start SSH
-              /usr/sbin/sshd
-
-              echo ""
-              echo "=============================================="
-              echo "           SSH STATUS"
-              echo "=============================================="
-
-              pgrep -a sshd || true
-
-              echo ""
-              echo "Listening ports:"
-              ss -lntp | grep ":22" || true
-
-              echo ""
-              echo "SSH configuration OK."
-            '
-
-      # ==========================================================
-      # Verify SSH from GitHub Runner
-      # ==========================================================
-      - name: 🧪 Test SSH Server
-        run: |
-          set -e
+          echo "TTYD started successfully."
 
           echo "=============================================="
-          echo "          Testing SSH on localhost"
+          echo "       Starting Cloudflare Tunnel"
           echo "=============================================="
 
-          if ! nc -z 127.0.0.1 22; then
-            echo "ERROR: SSH is NOT listening on port 22."
-            docker exec cynet-ubuntu ps aux
-            exit 1
-          fi
+          rm -f tunnel.log
 
-          echo "SSH port 22 is OPEN."
+          cloudflared tunnel \
+            --url http://127.0.0.1:7681 \
+            > tunnel.log 2>&1 &
 
-      # ==========================================================
-      # Install Pinggy client dependency
-      # ==========================================================
-      - name: 🌐 Prepare Pinggy
-        run: |
-          set -e
+          CLOUDFLARED_PID=$!
 
-          sudo apt-get update -y
-          sudo apt-get install -y openssh-client netcat-openbsd
-
-      # ==========================================================
-      # Start Pinggy
-      # ==========================================================
-      - name: 🚀 Start Pinggy SSH Tunnel
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "          Starting Pinggy Tunnel"
-          echo "=============================================="
-
-          rm -f pinggy.log
-
-          ssh \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=3 \
-            -o ExitOnForwardFailure=yes \
-            -p 443 \
-            -R0:localhost:22 \
-            tcp@a.pinggy.io \
-            > pinggy.log 2>&1 &
-
-          PINGGY_PID=$!
-
-          echo "Pinggy PID: $PINGGY_PID"
-
-          # Wait for Pinggy URL
           URL=""
 
           for i in $(seq 1 30); do
             sleep 2
 
-            echo "Checking Pinggy... ($i/30)"
-
-            cat pinggy.log || true
-
             URL=$(grep -oE \
-              'tcp://[^[:space:]]+\.run\.pinggy-free\.link:[0-9]+' \
-              pinggy.log | head -n 1 || true)
+              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+              tunnel.log | head -n 1 || true)
 
             if [ -n "$URL" ]; then
               break
             fi
 
-            if ! kill -0 "$PINGGY_PID" 2>/dev/null; then
-              echo "ERROR: Pinggy process stopped."
-              cat pinggy.log
+            if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+              echo "ERROR: Cloudflare Tunnel stopped."
+              cat tunnel.log
               exit 1
             fi
           done
 
           if [ -z "$URL" ]; then
-            echo "ERROR: Pinggy tunnel URL was not found."
-            echo ""
-            cat pinggy.log
+            echo "ERROR: Could not get Cloudflare URL."
+            cat tunnel.log
             exit 1
           fi
 
-          HOST=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+)#\1#')
-          PORT=$(echo "$URL" | sed -E 's#tcp://([^:]+):([0-9]+)#\2#')
-
           echo ""
           echo "=========================================================="
-          echo "              🔥 UBUNTU SSH IS READY"
+          echo "           🔥 UBUNTU 24.04 IS READY"
           echo "=========================================================="
           echo ""
-          echo "Host:"
-          echo "$HOST"
+          echo "🌐 WEB TERMINAL:"
+          echo "$URL"
           echo ""
-          echo "Port:"
-          echo "$PORT"
+          echo "🖥️ Ubuntu: 24.04"
+          echo "💻 Terminal: TTYD"
+          echo "🔐 SSH: Disabled / Not Installed"
           echo ""
-          echo "Username:"
-          echo "root"
-          echo ""
-          echo "SSH command:"
-          echo "ssh -p $PORT root@$HOST"
-          echo ""
-          echo "Password:"
-          echo "Use your GitHub Actions SSH_PASSWORD secret"
-          echo ""
-          echo "=========================================================="
-          echo "Pinggy tunnel will remain active while this job runs."
           echo "=========================================================="
           echo ""
 
-          # Keep tunnel alive
-          while kill -0 "$PINGGY_PID" 2>/dev/null; do
+          # Keep everything alive
+          while kill -0 "$CLOUDFLARED_PID" 2>/dev/null; do
             sleep 20
           done
 
-          echo "Pinggy tunnel stopped."
-          cat pinggy.log
+          echo "Cloudflare tunnel stopped."
+          cat tunnel.log
